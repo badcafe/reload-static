@@ -1,8 +1,8 @@
 const {assert} = require('chai');
 
-const statik = require('../../dist/node-static.cjs');
+const statik = require('../../dist/reload-static.cjs');
 
-describe('node-static (CommonJS)', function () {
+describe('reload-static (CommonJS)', function () {
     it('Has expected properties', function () {
         assert.isArray(statik.version, '`version` is an array');
         assert.isFunction(statik.Server, '`Server` is a constructor');

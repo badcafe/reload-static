@@ -52,6 +52,22 @@ const optionDefinitions = [
         description: 'Specify a custom index file when serving up ' +
             'directories. [default: "index.html"]',
         typeLabel: '{underline FILENAME}'
+    },
+    {
+        name: 'reload', type: Boolean,
+        description: 'Watch for file changes and reload the browser'
+    },
+    {
+        name: 'reloadPath', type: String,
+        description: 'Reload path, default is "/__reload__"'
+    },
+    {
+        name: 'noCssInject', type: Boolean,
+        description: 'Don\'t inject CSS changes, just reload as with any other file change'
+    },
+    {
+        name: 'wait', type: Number,
+        description: 'Server will wait for all changes, before reloading'
     }
 ];
 

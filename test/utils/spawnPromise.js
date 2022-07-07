@@ -69,6 +69,7 @@ const spawnPromise = (
 const spawnConditional = async (
     binFile, opts, args, killDelay, awaitInfo
 ) => {
+    // console.log(opts);
     if (Array.isArray(opts)) {
         awaitInfo = killDelay;
         killDelay = args;
@@ -78,9 +79,8 @@ const spawnConditional = async (
     const {
         condition,
         action: actionCallback,
-        error: errBack
+        error: errBack = (e) => { throw e }
     } = awaitInfo;
-
     let awaiting;
     let cliProm;
     const response = await new Promise((resolve, reject) => {

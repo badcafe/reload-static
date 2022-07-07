@@ -1,6 +1,6 @@
 'use strict';
 
-const statik = require('../dist/node-static.cjs');
+const statik = require('../dist/reload-static.cjs');
 
 //
 // Create a node-static server to serve the current directory

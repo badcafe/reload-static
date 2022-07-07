@@ -4,7 +4,7 @@ import {fileURLToPath} from 'url';
 
 import {assert} from 'chai';
 import fetch from 'node-fetch';
-import * as statik from '../../lib/node-static.js';
+import * as statik from '../../dist/reload-static.cjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -44,7 +44,7 @@ function startStaticServerWithCallback (port, callback) {
     });
 }
 
-describe('node-static', function () {
+describe('reload-static', function () {
     it('streaming a 404 page', async function () {
         testPort++;
         const getTestServer = () => {

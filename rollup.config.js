@@ -1,3 +1,5 @@
+import typescript from 'rollup-plugin-typescript2';
+
 /**
  * @external RollupConfig
  * @type {PlainObject}
@@ -11,17 +13,29 @@
  */
 function getRollupObject ({input} = {}) {
     return {
-        external: ['fs', 'events', 'http', 'path', 'mime', 'minimatch'],
+        external: ['fs', 'events', 'http', 'path', 'mime', 'minimatch', 'event-stream', 'lodash.debounce'],
         input,
         output: {
             format: 'cjs',
-            file: input.replace(/^.\/lib\//u, './dist/').replace(/\.js$/u, '.cjs')
-        }
+            file: input.replace(/^.\/lib\//u, './dist/').replace(/\.ts$/u, '.cjs')
+        },
+        plugins: [
+            typescript({
+                tsconfigDefaults: {
+                    compilerOptions: {
+                        allowSyntheticDefaultImports: true,
+                        module: 'ESNext',
+                        declaration: true,
+                        outDir: 'dist'
+                    }
+                }                
+            })
+        ],        
     };
 }
 
 export default [
     getRollupObject({
-        input: './lib/node-static.js', minifying: true
+        input: './lib/reload-static.ts', minifying: true
     })
 ];

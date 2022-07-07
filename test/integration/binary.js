@@ -17,7 +17,7 @@ async function updatePort (obj) {
 }
 
 
-describe('node-static (CLI)', function () {
+describe('reload-static (CLI)', function () {
     it('Gets help text', async function () {
         const {stdout} = await spawnPromise(binFile, ['-h']);
         assert.match(stdout, /USAGE: /u);

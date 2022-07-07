@@ -1,20 +1,20 @@
-import fs from 'fs';
-import events from 'events';
-import http from 'http';
-import path from 'path';
-// import buffer from 'buffer';
-
+import * as fs from 'fs';
+import * as events from 'events';
+import * as http from 'http';
+import * as path from 'path';
+import es from 'event-stream';
 import mime from 'mime';
 import minimatch from 'minimatch';
-import {mstat} from './node-static/util.js';
+import {mstat} from './reload-static/util.js';
+import debounce from 'lodash.debounce';
 
 const pkg = JSON.parse(fs.readFileSync(
     new URL('../package.json', import.meta.url)
-));
+).toString());
 
 const version = pkg.version.split('.');
 
-function tryStat(p, callback) {
+function tryStat(p: fs.PathLike, callback: Callback) {
     try {
         fs.stat(p, callback);
     } catch (e) {
@@ -23,12 +23,23 @@ function tryStat(p, callback) {
 }
 
 class Server {
-    constructor (root, options) {
-        if (root && typeof root === 'object') { options = root; root = null }
+
+    root: string;
+    options: Server.Options
+    cache: { [key: string]: number };
+    defaultHeaders: Headers;
+    serverInfo: string;
+    defaultExtension: string | null
+
+    constructor (root?: string | Server.Options, options?: Server.Options) {
+        if (root && typeof root === 'object') {
+            options = root;
+            root = undefined;
+        }
 
         // resolve() doesn't normalize (to lowercase) drive letters on Windows
-        this.root    = path.normalize(path.resolve(root || '.'));
-        this.options = options || {};
+        this.root    = path.normalize(path.resolve(root as string|| '.'));
+        this.options = options || {} as any;
         this.cache   = {'**': 3600};
 
         this.defaultHeaders  = {};
@@ -66,9 +77,96 @@ class Server {
             this.options.headers[k] = this.options.headers[k] ||
                                       this.defaultHeaders[k];
         }
+
+        this.options.wait = this.options.wait ?? 100;
+        this.options.reloadPath = this.options.reloadPath ?? '/___reload___';
     }
 
-    serveDir (pathname, req, res, finish) {
+    TAG_RE = new RegExp('</(body|svg|head)>', 'i');
+
+    getHTML(path: string) {
+        return `
+<script type="text/javascript">
+    // <![CDATA[  <-- For SVG support
+    if ('WebSocket' in window) {
+        (function() {
+            function refreshCSS() {
+                for (const link of [...document.getElementsByTagName("link")]
+                    .filter(link => link.href && link.rel.toLowerCase() === 'stylesheet')
+                ) {
+                    const url = new URL(link.href);
+                    const params = new URLSearchParams(url.search);
+                    params.set('_noCache', new Date().valueOf());
+                    url.search = params.toString();
+                    link.href = url.toString();
+                }
+            }
+            const eventSource = new EventSource('${path}');
+            eventSource.onmessage = msg => {
+                if (msg.data == 'reload') window.location.reload();
+                else if (msg.data == 'refreshcss') refreshCSS();
+            }
+            console.log('Live reload enabled.');
+        })();
+    }
+    // ]]>
+</script>`;
+    }
+
+    isEventStream(request: http.IncomingMessage) {
+        return !! request.headers.accept?.split(',')
+            .map(h => h.trim())
+            .includes('text/event-stream');
+    }
+
+    setReloadable(server: http.Server) {
+        this.options.reload = this.getHTML(this.options.reloadPath);
+        const clients = new Set<http.ServerResponse>();
+        server.on('request', async (request, response) => {
+            if (request.url && this.isEventStream(request)) {
+                const url = new URL(request.url, `http://${request.headers.host}`);
+                if (url.pathname === this.options.reloadPath) {
+                    clients.add(response);
+                    response.writeHead(200, {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive'
+                    });
+                    // prevent client "pending"
+                    response.write('event: open\n\n'); // 2x CRLF are necessary to the protocol
+                    response.on('close', () => clients.delete(response));
+                }
+            }
+        });
+        const dir = this.resolve('/');
+        let cssChange: boolean | undefined;
+        const notify = debounce(changePath => {
+            console.log((cssChange ? 'CSS change' : 'Change') + ' detected', changePath);
+            clients.forEach(client =>
+                client.write(
+                    `data: ${cssChange ? 'refreshcss' : 'reload'}
+
+`) // 2x CRLF are necessary to the protocol
+            );
+        }, this.options.wait);
+        (async () => {
+            const watcher = fs.promises.watch(dir, { recursive: true });
+            for await (const event of watcher) {
+                const changePath = event.filename;
+                cssChange = cssChange === undefined || cssChange
+                    ? path.extname(changePath) === ".css" && !this.options.noCssInject
+                    : false;
+                notify(changePath);
+            }
+        })();
+    }
+
+    serveDir (
+        pathname: string,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
         const htmlIndex = path.join(pathname, this.options.indexFile),
             that = this;
 
@@ -76,7 +174,7 @@ class Server {
             if (!e) {
                 const status = 200;
                 const headers = {};
-                const originalPathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+                const originalPathname = decodeURIComponent(new URL(req.url!, 'http://localhost').pathname);
                 if (originalPathname.length && originalPathname.charAt(originalPathname.length - 1) !== '/') {
                     return finish(301, { 'Location': originalPathname + '/' });
                 } else {
@@ -86,12 +184,12 @@ class Server {
                 // Stream a directory of files as a single file.
                 fs.readFile(path.join(pathname, 'index.json'), function (e, contents) {
                     if (e) { return finish(404, {}) }
-                    const index = JSON.parse(contents);
+                    const index = JSON.parse(contents.toString());
                     streamFiles(index.files);
                 });
             }
         });
-        function streamFiles(files) {
+        function streamFiles(files: string[]) {
             mstat(pathname, files, function (e, stat) {
                 if (e) { return finish(404, {}) }
                 that.respond(pathname, 200, {}, files, stat, req, res, finish);
@@ -99,24 +197,36 @@ class Server {
         }
     }
 
-    serveFile (pathname, status, headers, req, res) {
+    serveFile(
+        pathname: string,
+        status: number,
+        headers: Headers,
+        req: http.IncomingMessage,
+        res: http.ServerResponse
+    ): events.EventEmitter {
         const that = this;
         const promise = new(events.EventEmitter);
-
         pathname = this.resolve(pathname);
 
         tryStat(pathname, function (e, stat) {
             if (e) {
                 return promise.emit('error', e);
             }
-            that.respond(null, status, headers, [pathname], stat, req, res, function (status, headers) {
-                that.finish(status, headers, req, res, promise);
+            that.respond(null, status, headers, [pathname], stat, req, res, function(status: number, headers?: Headers) {
+                that.finish(status, headers!, req, res, promise);
             });
         });
         return promise;
     }
 
-    finish (status, headers, req, res, promise, callback) {
+    finish(
+        status: number,
+        headers: Headers,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        promise: events.EventEmitter,
+        callback?: Callback
+    ) {
         const result = {
             status,
             headers,
@@ -151,7 +261,14 @@ class Server {
         }
     }
 
-    servePath (pathname, status, headers, req, res, finish) {
+    servePath(
+        pathname: string,
+        status: number,
+        headers: Headers,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
         const that = this,
             promise = new(events.EventEmitter);
 
@@ -192,42 +309,48 @@ class Server {
         return promise;
     }
 
-    resolve (pathname) {
+    resolve(pathname: string) {
         return path.resolve(path.join(this.root, pathname));
     }
 
-    serve (req, res, callback) {
-        const that    = this,
-            promise = new(events.EventEmitter);
-        let pathname;
+    serve(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        callback?: Callback
+    ) {
+        if (! this.isEventStream(req)) {
+            const that    = this,
+                promise = new(events.EventEmitter);
+            let pathname: string;
 
-        const finish = function (status, headers) {
-            that.finish(status, headers, req, res, promise, callback);
-        };
+            const finish = function (status: number, headers: Headers) {
+                that.finish(status, headers, req, res, promise, callback);
+            };
 
-        try {
-            pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-        }
-        catch(e) {
-            return process.nextTick(function() {
-                return finish(400, {});
+            try {
+                pathname = decodeURIComponent(new URL(req.url!, 'http://localhost').pathname);
+            }
+            catch(e) {
+                return process.nextTick(function() {
+                    return finish(400, {});
+                });
+            }
+
+            process.nextTick(function () {
+                that.servePath(pathname, 200, {}, req, res, finish).on('success', function (result) {
+                    promise.emit('success', result);
+                }).on('error', function (err) {
+                    promise.emit('error');
+                });
             });
+            if (! callback) { return promise }
         }
-
-        process.nextTick(function () {
-            that.servePath(pathname, 200, {}, req, res, finish).on('success', function (result) {
-                promise.emit('success', result);
-            }).on('error', function (err) {
-                promise.emit('error');
-            });
-        });
-        if (! callback) { return promise }
     }
 
     /* Check if we should consider sending a gzip version of the file based on the
      * file content type and client's Accept-Encoding header value.
      */
-    gzipOk (req, contentType) {
+    gzipOk(req: http.IncomingMessage, contentType: string) {
         const enable = this.options.gzip;
         if(enable &&
             (typeof enable === 'boolean' ||
@@ -241,7 +364,17 @@ class Server {
     /* Send a gzipped version of the file if the options and the client indicate gzip is enabled and
      * we find a .gz file matching the static resource requested.
      */
-    respondGzip (pathname, status, contentType, _headers, files, stat, req, res, finish) {
+    respondGzip(
+        pathname: string | null,
+        status: number,
+        contentType: string,
+        _headers: Headers,
+        files: string[],
+        stat: fs.Stats,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
         const that = this;
         if (files.length == 1 && this.gzipOk(req, contentType)) {
             const gzFile = files[0] + '.gz';
@@ -261,20 +394,19 @@ class Server {
         }
     }
 
-    parseByteRange (req, stat) {
+    parseByteRange(req: http.IncomingMessage, stat: fs.Stats) {
         const byteRange = {
             from: 0,
             to: 0,
             valid: false
         }
-
-        let rangeHeader = req.headers['range'];
+        let rangeHeader: string[] | string | undefined = req.headers['range'];
         const flavor = 'bytes=';
 
         if (rangeHeader) {
             if (rangeHeader.startsWith(flavor) && !rangeHeader.includes(',')) {
                 /* Parse */
-                rangeHeader = rangeHeader.substr(flavor.length).split('-');
+                rangeHeader = rangeHeader.substring(flavor.length).split('-');
                 byteRange.from = parseInt(rangeHeader[0]);
                 byteRange.to = parseInt(rangeHeader[1]);
 
@@ -299,12 +431,22 @@ class Server {
         return byteRange;
     }
 
-    respondNoGzip (pathname, status, contentType, _headers, files, stat, req, res, finish) {
-        const mtime           = Date.parse(stat.mtime),
+    respondNoGzip(
+        pathname: string | null,
+        status: number,
+        contentType: string,
+        _headers: Headers,
+        files: string[],
+        stat: fs.Stats,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
+        const mtime         = Date.parse(stat.mtime as any),
             key             = pathname || files[0],
-            headers         = {},
+            headers: Headers = {},
             clientETag      = req.headers['if-none-match'],
-            clientMTime     = Date.parse(req.headers['if-modified-since']),
+            clientMTime     = Date.parse(req.headers['if-modified-since']!),
             byteRange       = this.parseByteRange(req, stat);
         let startByte       = 0,
             length          = stat.size;
@@ -323,13 +465,13 @@ class Server {
 
             } else {
                 byteRange.valid = false;
-                console.warn('Range request exceeds file boundaries, goes until byte no', byteRange.to, 'against file size of', length, 'bytes');
+                console.warn(req.url, 'Range request exceeds file boundaries, goes until byte no', byteRange.to, 'against file size of', length, 'bytes');
             }
         }
 
         /* In any case, check for unhandled byte range headers */
         if (!byteRange.valid && req.headers['range']) {
-            console.error(new Error('Range request present but invalid, might serve whole file instead'));
+            console.error(req.url, new Error('Range request present but invalid, might serve whole file instead'));
         }
 
         // Copy default headers
@@ -364,16 +506,20 @@ class Server {
             });
             finish(304, headers);
         } else {
-            res.writeHead(status, headers);
-
-            this.stream(key, files, length, startByte, res, function (e) {
-                if (e) { return finish(500, {}) }
-                finish(status, headers);
-            });
+            this.writeStream(status, headers, key, files, length, startByte, res, finish);
         }
     }
 
-    respond (pathname, status, _headers, files, stat, req, res, finish) {
+    respond(
+        pathname: string | null,
+        status: number,
+        _headers: Headers,
+        files: string[],
+        stat: fs.Stats,
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
         const contentType = _headers['Content-Type'] ||
                           mime.getType(files[0]) ||
                           'application/octet-stream';
@@ -386,8 +532,80 @@ class Server {
         }
     }
 
-    stream (pathname, files, length, startByte, res, callback) {
+    writeStream(
+        status: number,
+        headers: Headers,
+        pathname: string,
+        files: string[],
+        length: number,
+        startByte: number,
+        res: http.ServerResponse,
+        finish: Finish
+    ) {
+        const cb = function (e: Error) {
+            if (e) { return finish(500, {}) }
+            finish(status, headers);
+        }
+        let willInject = false;
+        if (this.options.reload) {
+            const ext = path.extname(pathname).toLocaleLowerCase();
+            if ([ ".html", ".htm", ".xhtml", ".svg" ].includes(ext)
+                || ['text/html', 'image/svg+xml', 'application/xhtml+xml'].includes(headers['Content-Type'])
+            ) {
+                willInject = true;
+            }
+        }
+        if (willInject) {
+            delete headers['Content-Length'];
+            res.writeHead(status, headers);
+            this.stream(pathname, files, length, startByte, res, cb, file => {
+                const stream = fs.createReadStream(file, {
+                    flags: 'r',
+                    mode: 0o666,
+                    start: startByte,
+                    end: startByte + (length ? length - 1 : 0)
+                })
+                let injected = false;
+                const streamPipe = stream.pipe.bind(stream);
+                stream.pipe = ((res: NodeJS.WritableStream) => {
+                    streamPipe(es.split())
+                        .pipe(es.map((line: string, consume: (err: Error | null, line: string) => void) => {
+                            try {
+                                if (! injected) {
+                                    const match = this.TAG_RE.exec(line);
+                                    if (match) {
+                                        injected = true;
+                                        line = line.slice(0, match.index) + this.options.reload + match[0];
+                                    }
+                                }
+                            } finally {
+                                consume(null, line);
+                            }
+                        }))
+                        .pipe(res);
+                }) as any;
+                return stream;
+            });
+        } else {
+            res.writeHead(status, headers);
+            this.stream(pathname, files, length, startByte, res, cb);
+        }
+    }
 
+    stream (
+        pathname: string,
+        files: string[],
+        length: number,
+        startByte: number,
+        res: http.ServerResponse,
+        callback: Callback,
+        reader = (file: string) => fs.createReadStream(file, {
+            flags: 'r',
+            mode: 0o666,
+            start: startByte,
+            end: startByte + (length ? length - 1 : 0)
+        })
+    ) {
         (function streamFile(files, offset) {
             let file = files.shift();
 
@@ -395,12 +613,7 @@ class Server {
                 file = path.resolve(file) === path.normalize(file)  ? file : path.join(pathname || '.', file);
 
                 // Stream the file to the client
-                fs.createReadStream(file, {
-                    flags: 'r',
-                    mode: 0o666,
-                    start: startByte,
-                    end: startByte + (length ? length - 1 : 0)
-                }).on('data', function (chunk) {
+                reader(file).on('data', function (chunk) {
                     // Bounds check the incoming chunk and offset, as copying
                     // a buffer from an invalid offset will throw an error and crash
                     if (chunk.length && offset < length && offset >= 0) {
@@ -419,15 +632,15 @@ class Server {
         })(files.slice(0), 0);
     }
 
-    setCacheHeaders (_headers, req) {
-        const maxAge = this.getMaxAge(req.url);
+    setCacheHeaders(_headers: Headers, req: http.IncomingMessage) {
+        const maxAge = this.getMaxAge(req.url!);
         if (typeof(maxAge) === 'number') {
             _headers['cache-control'] = 'max-age=' + maxAge;
         }
         return _headers;
     }
 
-    getMaxAge (requestUrl) {
+    getMaxAge(requestUrl: string) {
         if (this.cache) {
             for (const pattern in this.cache) {
                 if (minimatch(requestUrl, pattern)) {
@@ -436,6 +649,30 @@ class Server {
             }
         }
         return false;
+    }
+}
+
+export interface Headers {
+    [k: string]: any;
+}
+export type Finish = (status: number, headers: Headers) => void;
+export type Callback = (error: any, result?: any) => void;
+
+namespace Server {
+    export interface Options {
+        headers?: Headers
+        indexFile: string
+        cache?: number | boolean
+        serverInfo?: Buffer
+        server?: string
+        "cache-control"?: string
+        gzip? : RegExp
+
+        defaultExtension?: string
+        wait: number
+        reload?: string
+        reloadPath: string
+        noCssInject?: boolean
     }
 }
 

@@ -1,17 +1,14 @@
-# node-static
+# reload-static
 
-[![Node.js CI status](https://github.com/http://github.com/cloudhead/node-static/workflows/Node.js%20CI/badge.svg)](https://github.com/http://github.com/cloudhead/node-static/actions)
+> a simple, *rfc 2616 compliant* file streaming module for [node](http://nodejs.org) with live reload capabilities
 
-> a simple, *rfc 2616 compliant* file streaming module for [node](http://nodejs.org)
-
-node-static understands and supports *conditional GET* and *HEAD* requests.
-node-static was inspired by some of the other static-file serving modules out
-there, such as node-paperboy and antinode.
+* reload-static understands and supports *conditional GET* and *HEAD* requests.
+* reload-static is a kind of merge of node-static + live-server. No need to proxy.
 
 ## Installation
 
 ```sh
-$ npm install node-static
+$ npm install reload-static
 ```
 
 ## Set-up
@@ -19,16 +16,16 @@ $ npm install node-static
 ### ESM
 
 ```js
-import {Server, version, mime} from 'node-static';
+import {Server, version, mime} from 'reload-static';
 
 // OR:
-// import * as statik from 'node-static';
+// import * as statik from 'reload-static';
 ```
 
 ### CommonJS
 
 ```js
-const statik = require('node-static');
+const statik = require('reload-static');
 ```
 
 ## Usage
@@ -39,7 +36,7 @@ const statik = require('node-static');
 //
 const file = new statik.Server('./public');
 
-require('http').createServer(function (request, response) {
+const server = require('http').createServer(function (request, response) {
     request.addListener('end', function () {
         //
         // Serve files!
@@ -47,6 +44,11 @@ require('http').createServer(function (request, response) {
         file.serve(request, response);
     }).resume();
 }).listen(8080);
+
+// Optionally, listen to HTML and CSS updates and reload the browser
+if (process.env.NODE_ENV === 'development') {
+    file.setReloadable(server);
+}
 ```
 
 ## API
@@ -75,6 +77,15 @@ new statik.Server('./public', { cache: 3600 });
 
 This will set the `Cache-Control` header, telling clients to cache the file for
 an hour. This is the default setting.
+
+### Enabling live reload
+
+```js
+const file = new statik.Server();
+file.setReloadable(server);
+```
+
+Listen to HTML and CSS updates and reload the browser when necessary.
 
 ### Serving files under a directory
 
@@ -130,7 +141,7 @@ time a file has been served successfully, or if there was an error serving the
 file:
 
 ```js
-const statik = require('node-static');
+const statik = require('reload-static');
 
 const fileServer = new statik.Server('./public');
 
@@ -152,7 +163,7 @@ require('http').createServer(function (request, response) {
 ```
 
 Note that if you pass a callback, and there is an error serving the file,
-node-static *will not* respond to the client. This gives you the opportunity
+reload-static *will not* respond to the client. This gives you the opportunity
 to re-route the request, or handle it differently.
 
 For example, you may want to interpret a request as a static request, but if
@@ -225,6 +236,24 @@ A request to '/myFile' would check for a `myFile` folder (first) then a
 
 example: `{ defaultExtension: "html" }`
 
+#### `reloadPath` (Default: `/___reload___`)
+
+Path used to send reload signal between the browser and the server
+
+Use with `setReloadable(server)`
+
+#### `noCssInject` (Default: `false`)
+
+Don\'t inject CSS changes, just reload as with any other file change
+
+Use with `setReloadable(server)`
+
+#### `wait` (Default: `100`)
+
+Server will wait for all changes, before reloading
+
+Use with `setReloadable(server)`
+
 ## Command Line Interface
 
 `node-static` also provides a CLI.
@@ -240,6 +269,10 @@ example: `{ defaultExtension: "html" }`
 --spa               Serve the content as a single page app by redirecting all
                     non-file requests to the index HTML file.
 --indexFile, -i     Specify a custom index file when serving up directories.          [default: "index.html"]
+--reload            Watch for file changes and reload the browser                     [default: false]
+--reloadPath        Reload path.                                                      [default: "/__reload__"]
+--noCssInject       Don't inject CSS changes, just reload as with any other file change [default: false]
+--wait              Server will wait for all changes, before reloading                [default: 100]
 --help, -h          display this help message
 ```
 
@@ -266,6 +299,24 @@ serving "." at http://127.0.0.1:8080
 $ static -a 0.0.0.0
 serving "." at http://0.0.0.0:8080
 
+# serve up and listen the current directory
+$ static --reload
+serving "." at http://127.0.0.1:8080
+
 # show help message, including all options
 $ static -h
 ```
+
+### Why ?
+
+Because in certain situations, other tools don't work and the fix can't be applied : https://composed.blog/sse-webpack-dev-server
+
+### Known issues
+
+The base code come from node-static.
+
+* After turning the code to Typescript, it appears that wrong types were used here and there, using `as any` as an ugly fix. I didn't spend more time on that.
+* The test suite fails randomly on the CLI tests (and some times it passes). I spent enough time to figure out what occurs with no success.
+
+> * But it works !
+> * I accept pull requests !

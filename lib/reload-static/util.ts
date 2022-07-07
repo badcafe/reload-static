@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import { Callback } from '../reload-static';
 
-function mstat (dir, files, callback) {
-    (function mstat(files, stats) {
+function mstat(dir: string, files: string[], callback: Callback) {
+    (function mstat(files: string[], stats: fs.Stats[]) {
         const file = files.shift();
 
         if (file) {
@@ -23,7 +24,7 @@ function mstat (dir, files, callback) {
                     return total + stat.size;
                 }, 0),
                 mtime: stats.reduce(function (latest, stat) {
-                    return latest > stat.mtime ? latest : stat.mtime;
+                    return latest > (stat.mtime as any) ? latest : stat.mtime as any as number;
                 }, 0),
                 ino: stats.reduce(function (total, stat) {
                     return total + stat.ino;
