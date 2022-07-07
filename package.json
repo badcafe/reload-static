@@ -1,6 +1,6 @@
 {
   "name": "reload-static",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "simple, compliant file streaming module for node with live reload capabilities",
   "author": "Philippe Poulard <philippe.poulard@inria.fr>",
   "contributors": [
@@ -12,12 +12,6 @@
   "type": "module",
   "main": "./dist/reload-static.cjs",
   "types": "./dist/reload-static.d.ts",
-  "exports": {
-    ".": {
-      "import": "./lib/reload-static.js",
-      "require": "./dist/reload-static.cjs"
-    }
-  },
   "license": "MIT",
   "bin": {
     "static": "bin/cli.js"
